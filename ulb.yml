@@ -1,0 +1,116 @@
+- reportName: ULBReport
+  summary: Fetches complaint stats based on department types for a ULB
+  version: 1.0.0
+  moduleName: pgr
+  externalService:
+  - entity: $.MdmsRes.RAINMAKER-PGR.ServiceDefs
+    apiURL: http://egov-mdms-service:8080/egov-mdms-service/v1/_get?moduleName=RAINMAKER-PGR&masterName=ServiceDefs&tenantId=$tenantId
+    keyOrder: serviceCode,slaHours
+    tableName: tbl_dept
+  sourceColumns:    
+  - name: tenantid
+    label: reports.pgr.tenantid
+    type: string
+    source: eg_pgr_service
+    total: false
+  - name: received
+    label: reports.pgr.received
+    type: string
+    source: eg_pgr_service
+    total: true
+  - name: assigned
+    label: reports.pgr.assigned
+    type: string
+    source: eg_pgr_service
+    total: true
+  - name: resolvedwithinsla
+    label: reports.pgr.resolvedwithinsla
+    type: string
+    source: eg_pgr_service
+    total: true
+  - name: resolvedoutsidesla
+    label: reports.pgr.resolvedoutsidesla
+    type: string
+    source: eg_pgr_service
+    total: true
+  - name: opencomplaintswithinsla
+    label: reports.pgr.opencomplaintswithinsla
+    type: string
+    source: eg_pgr_service
+    total: true
+  - name: opencomplaintsoutsidesla
+    label: reports.pgr.opencomplaintsoutsidesla
+    type: string
+    source: eg_pgr_service
+    total: true
+  - name: rating
+    label: reports.pgr.rating
+    type: number
+    source: eg_pgr_service
+    total: true
+  searchParams:
+  - name: ulb
+    label: ULB
+    type: singlevaluelist
+    pattern: http://egov-mdms-service:8080/egov-mdms-service/v1/_get?tenantId=$tenantid&moduleName=tenant&masterName=tenants|$.MdmsRes.tenant.tenants.*.code|$.MdmsRes.tenant.tenants.*.name
+    source: pt
+    wrapper: true
+    isMandatory: false
+    searchClause: AND pgr_data.tenantid = $ulb
+  - name: fromDate
+    label: reports.pgr.datefrom
+    type: epoch
+    source: eg_pgr_service
+    isMandatory: false
+    searchClause: AND pgr_data.createdtime >= $fromDate
+  - name: toDate
+    label: reports.pgr.dateto
+    type: epoch
+    source: eg_pgr_service
+    isMandatory: false
+    searchClause: AND pgr_data.createdtime <= $toDate
+  - name: status
+    label: reports.pgr.status
+    type: singlevaluelist
+    pattern: 'list://PENDINGATLEVEL1:PENDINGATLEVEL1,PENDINGATLEVEL2:PENDINGATLEVEL2,PENDINGATLEVEL3:PENDINGATLEVEL3,CLOSEDAFTERREJECTION:CLOSEDAFTERREJECTION,CLOSEDAFTERRESOLUTION:CLOSEDAFTERRESOLUTION,REJECTED:REJECTED,RESOLVED:RESOLVED'
+    source: seva
+    isMandatory: false
+    searchClause: AND pgr_data.applicationstatus = $status
+  - name: deptname
+    label: reports.pgr.dept.name
+    type: singlevaluelist
+    source: eg_pgr_service
+    pattern: http://egov-mdms-service:8080/egov-mdms-service/v1/_get?tenantId=$tenantid&moduleName=common-masters&masterName=Department|$.MdmsRes.common-masters.Department[*].code|$.MdmsRes.common-masters.Department[*].name   
+    isMandatory: false
+    searchClause: AND deptmap_def.code = $deptname
+  query: |  
+    with pgr_data as (select
+      servicerequestid,
+      servicecode,
+      createdtime,
+      applicationstatus,
+      tenantid,
+      rating,
+      (select max(createdtime) from eg_wf_processinstance_v2 where action='RESOLVE' and businessid = servicerequestid) as resolvedtime,
+      (select min(createdtime) from eg_wf_processinstance_v2 where action='APPLY' and businessid = servicerequestid) as opentime
+      from eg_pgr_service_v2 as ps
+      where
+      tenantid = $tenantid)
+    select 
+      initcap(split_part(tenantid, '.', 2)) as tenantid,      
+      deptmap_def.name as department,    
+      SUM (CASE WHEN applicationstatus in ('PENDINGATLEVEL2', 'PENDINGATLEVEL1') THEN 1 ELSE 0 END) as assigned,
+      count(applicationstatus) as received,
+      rating,
+      SUM (CASE WHEN applicationstatus in ('CLOSEDAFTERRESOLUTION', 'RESOLVED') and (resolvedtime - opentime) < 14 * 86400 * 1000 THEN 1 ELSE 0 END) as resolvedwithinsla,
+      SUM (CASE WHEN applicationstatus in ('CLOSEDAFTERRESOLUTION', 'RESOLVED') and (resolvedtime - opentime) >= 14 * 86400 * 1000 THEN 1 ELSE 0 END) as resolvedoutsidesla,
+      SUM (CASE WHEN applicationstatus in ('PENDINGATLEVEL1') and (extract(epoch from now()) * 1000 - opentime) < 14 * 86400 * 1000 THEN 1 ELSE 0 END)  as opencomplaintswithinsla,
+      SUM (CASE WHEN applicationstatus in ('PENDINGATLEVEL1') and (extract(epoch from now()) * 1000 - opentime) >= 14 * 86400 * 1000 THEN 1 ELSE 0 END) as opencomplaintsoutsidesla
+      SUM (CASE WHEN applicationstatus in ('PENDINGATLEVEL2') and (extract(epoch from now()) * 1000 - opentime) < 14 * 86400 * 1000 THEN 1 ELSE 0 END)  as opencomplaintswithinsla,
+      SUM (CASE WHEN applicationstatus in ('PENDINGATLEVEL2') and (extract(epoch from now()) * 1000 - opentime) >= 14 * 86400 * 1000 THEN 1 ELSE 0 END) as opencomplaintsoutsidesla
+      SUM (CASE WHEN applicationstatus in ('PENDINGATLEVEL3') and (extract(epoch from now()) * 1000 - opentime) < 14 * 86400 * 1000 THEN 1 ELSE 0 END)  as opencomplaintswithinsla,
+      SUM (CASE WHEN applicationstatus in ('PENDINGATLEVEL3') and (extract(epoch from now()) * 1000 - opentime) >= 14 * 86400 * 1000 THEN 1 ELSE 0 END) as opencomplaintsoutsidesla
+                  
+      from pgr_data
+      INNER JOIN (VALUES tbl_dept) AS deptmap(serviceCode, department, slaHours) ON deptmap.serviceCode = pgr_data.servicecode
+      WHERE 1=1
